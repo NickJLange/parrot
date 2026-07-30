@@ -40,6 +40,28 @@ parrot --hotkey right-option           # change the push-to-talk key
 parrot --no-overlay                    # disable the bottom-of-screen pill
 ```
 
+## Models
+
+The default model id is `whisper-base.en`:
+
+```sh
+parrot models download whisper-base.en
+```
+
+WhisperKit stores downloaded model files in `~/Documents/huggingface/`.
+For `whisper-base.en`, the Core ML model lands under
+`~/Documents/huggingface/models/argmaxinc/whisperkit-coreml/openai_whisper-base.en/`,
+and tokenizer files land under
+`~/Documents/huggingface/models/openai/whisper-base.en/`.
+
+If a model download fails with a Hugging Face authentication error, check for
+an expired saved token:
+
+```sh
+hf auth whoami
+hf auth login --force
+```
+
 ## Stack
 
 - **Swift** — single SPM executable target

@@ -21,7 +21,11 @@ actor WhisperKitTranscriber: Transcriber {
         }
         FileHandle.standardError.write(Data("loading \(model.id)...\n".utf8))
         let config = WhisperKitConfig(model: whisperKitID, verbose: false, prewarm: true, load: true)
-        pipeline = try await WhisperKit(config)
+        do {
+            pipeline = try await WhisperKit(config)
+        } catch {
+            throw TranscriberError.modelSetupFailed(Self.describeSetupFailure(error))
+        }
         FileHandle.standardError.write(Data("✓ \(model.id) ready\n".utf8))
     }
 
@@ -51,9 +55,38 @@ actor WhisperKitTranscriber: Transcriber {
         out = out.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    static func describeSetupFailure(_ error: Error) -> String {
+        let details = String(describing: error)
+        if details.contains("authorizationRequired") {
+            return """
+            Hugging Face authentication failed while downloading the model.
+
+            A saved Hugging Face token may be invalid or missing access to the model repo.
+            Fix it with `hf auth login --force`, or remove/disable the saved token if you only need public models.
+
+            Underlying error: \(details)
+            """
+        }
+        return details
+    }
 }
 
-enum TranscriberError: Error {
+enum TranscriberError: LocalizedError, CustomStringConvertible {
     case missingEngineID
     case notLoaded
+    case modelSetupFailed(String)
+
+    var description: String {
+        switch self {
+        case .missingEngineID:
+            return "transcription model is missing its WhisperKit model id"
+        case .notLoaded:
+            return "transcription model is not loaded"
+        case .modelSetupFailed(let message):
+            return message
+        }
+    }
+
+    var errorDescription: String? { description }
 }
