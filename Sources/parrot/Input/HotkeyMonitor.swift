@@ -25,6 +25,14 @@ final class HotkeyMonitor {
         self.debug = debug
     }
 
+    /// Friendly names for the keycodes `--hotkey` presets use, for debug output.
+    private static let keyNames: [CGKeyCode: String] = [
+        54: "right-cmd", 55: "left-cmd",
+        58: "left-option", 61: "right-option",
+        59: "left-control", 62: "right-control",
+        63: "fn",
+    ]
+
     func start(onEvent: @escaping (Event) -> Void) throws {
         self.onEvent = onEvent
 
@@ -81,12 +89,12 @@ final class HotkeyMonitor {
     fileprivate func handle(type: CGEventType, event: CGEvent) {
         if debug {
             let flags = event.flags
-            let keycode = event.getIntegerValueField(.keyboardEventKeycode)
-            FileHandle.standardError.write(
-                Data(
-                    "  [debug] type=\(type.rawValue) keycode=\(keycode) flags=\(String(flags.rawValue, radix: 16))\n"
-                        .utf8
-                ))
+            let keycode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+            let name = Self.keyNames[keycode] ?? "keycode-\(keycode)"
+            let inTrigger = requiredKeycodes.contains(keycode)
+            let line = "  [debug] type=\(type.rawValue) key=\(name) flags=\(String(flags.rawValue, radix: 16)) "
+                + "part-of-trigger=\(inTrigger ? "yes" : "no (ignored)")\n"
+            FileHandle.standardError.write(Data(line.utf8))
         }
         guard type == .flagsChanged else { return }
         let pressed = requiredKeycodes.allSatisfy {
