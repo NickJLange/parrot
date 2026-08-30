@@ -25,12 +25,22 @@ final class HotkeyMonitor {
         self.debug = debug
     }
 
-    /// Friendly names for the keycodes `--hotkey` presets use, for debug output.
-    private static let keyNames: [CGKeyCode: String] = [
-        54: "right-cmd", 55: "left-cmd",
-        58: "left-option", 61: "right-option",
-        59: "left-control", 62: "right-control",
-        63: "fn",
+    /// Name and private per-side modifier bit for each keycode `--hotkey`
+    /// presets use. The bits are NX_DEVICE*KEYMASK from IOLLEvent.h —
+    /// undocumented but stable and widely relied on (Hammerspoon, Karabiner,
+    /// etc.) — and are how we tell left/right apart: the public
+    /// `CGEventFlags` masks (.maskControl, .maskAlternate, ...) only report
+    /// "this category is down somewhere," not which side. `event.flags` is a
+    /// full snapshot of currently-held modifiers, so checking these bits
+    /// directly on the event is synchronous and correct for chords too.
+    private static let keyInfo: [CGKeyCode: (name: String, deviceBit: UInt64)] = [
+        54: ("right-cmd", 0x0010),
+        55: ("left-cmd", 0x0008),
+        58: ("left-option", 0x0020),
+        59: ("left-control", 0x0001),
+        61: ("right-option", 0x0040),
+        62: ("right-control", 0x2000),
+        63: ("fn", 0x800000),
     ]
 
     func start(onEvent: @escaping (Event) -> Void) throws {
@@ -87,18 +97,19 @@ final class HotkeyMonitor {
     }
 
     fileprivate func handle(type: CGEventType, event: CGEvent) {
+        let rawFlags = UInt64(event.flags.rawValue)
         if debug {
-            let flags = event.flags
             let keycode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-            let name = Self.keyNames[keycode] ?? "keycode-\(keycode)"
+            let name = Self.keyInfo[keycode]?.name ?? "keycode-\(keycode)"
             let inTrigger = requiredKeycodes.contains(keycode)
-            let line = "  [debug] type=\(type.rawValue) key=\(name) flags=\(String(flags.rawValue, radix: 16)) "
+            let line = "  [debug] type=\(type.rawValue) key=\(name) flags=\(String(rawFlags, radix: 16)) "
                 + "part-of-trigger=\(inTrigger ? "yes" : "no (ignored)")\n"
             FileHandle.standardError.write(Data(line.utf8))
         }
         guard type == .flagsChanged else { return }
-        let pressed = requiredKeycodes.allSatisfy {
-            CGEventSource.keyState(.combinedSessionState, key: $0)
+        let pressed = requiredKeycodes.allSatisfy { keycode in
+            guard let bit = Self.keyInfo[keycode]?.deviceBit else { return false }
+            return rawFlags & bit != 0
         }
         guard pressed != isPressed else { return }
         isPressed = pressed
