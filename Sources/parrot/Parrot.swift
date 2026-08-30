@@ -163,8 +163,8 @@ struct Run: ParsableCommand {
                             FileHandle.standardError.write(Data(
                                 String(format: "→ %.2fs · %@\n", elapsed, text).utf8
                             ))
+                            TextInjector.inject(text, debug: debugInject, delayMs: injectDelayMs)
                             await MainActor.run {
-                                TextInjector.inject(text, debug: debugInject, delayMs: injectDelayMs)
                                 overlay?.hide()
                                 menuBar.setRecording(false)
                             }
