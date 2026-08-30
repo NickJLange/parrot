@@ -35,6 +35,9 @@ struct Run: ParsableCommand {
     @Flag(name: .long, help: "Log each injected text chunk (index, timing, UTF-16 codepoints) to stderr.")
     var debugInject: Bool = false
 
+    @Option(name: .long, help: "EXPERIMENTAL: delay (ms) between injected chunks, for Citrix flooding validation. 0 = off.")
+    var injectDelayMs: Int = 0
+
     @Flag(name: .long, help: "Write each capture to /tmp/parrot-last.wav for inspection.")
     var dumpWav: Bool = false
 
@@ -161,7 +164,7 @@ struct Run: ParsableCommand {
                                 String(format: "→ %.2fs · %@\n", elapsed, text).utf8
                             ))
                             await MainActor.run {
-                                TextInjector.inject(text, debug: debugInject)
+                                TextInjector.inject(text, debug: debugInject, delayMs: injectDelayMs)
                                 overlay?.hide()
                                 menuBar.setRecording(false)
                             }

@@ -14,7 +14,12 @@ enum TextInjector {
     /// text, UTF-16 codepoints) to stderr before posting it — useful for
     /// comparing what was actually sent against what a remote client
     /// (e.g. Citrix Viewer) ends up displaying.
-    static func inject(_ text: String, debug: Bool = false) {
+    /// EXPERIMENTAL: `delayMs` throttles the loop between chunks. Thrown in
+    /// to validate the hypothesis that Citrix Viewer's synthetic-keyboard
+    /// virtual channel drops/replays input when flooded with zero-gap
+    /// CGEvents (see docs/superpowers/specs -- inject debug logging).
+    /// Remove or replace with the real per-app-list design once confirmed.
+    static func inject(_ text: String, debug: Bool = false, delayMs: Int = 0) {
         guard !text.isEmpty else { return }
 
         let utf16 = Array(text.utf16)
@@ -32,6 +37,9 @@ enum TextInjector {
             postChunk(&chunk)
             index = end
             chunkIndex += 1
+            if delayMs > 0, index < utf16.count {
+                Thread.sleep(forTimeInterval: Double(delayMs) / 1000.0)
+            }
         }
     }
 
