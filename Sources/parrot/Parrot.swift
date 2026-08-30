@@ -38,6 +38,9 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "EXPERIMENTAL: delay (ms) between injected chunks, for Citrix flooding validation. 0 = off.")
     var injectDelayMs: Int = 0
 
+    @Option(name: .long, help: "EXPERIMENTAL: UTF-16 units per injected chunk, for Citrix burst-size validation. Default 20.")
+    var injectChunkSize: Int = 20
+
     @Flag(name: .long, help: "Write each capture to /tmp/parrot-last.wav for inspection.")
     var dumpWav: Bool = false
 
@@ -163,7 +166,7 @@ struct Run: ParsableCommand {
                             FileHandle.standardError.write(Data(
                                 String(format: "→ %.2fs · %@\n", elapsed, text).utf8
                             ))
-                            TextInjector.inject(text, debug: debugInject, delayMs: injectDelayMs)
+                            TextInjector.inject(text, debug: debugInject, delayMs: injectDelayMs, chunkSize: injectChunkSize)
                             await MainActor.run {
                                 overlay?.hide()
                                 menuBar.setRecording(false)

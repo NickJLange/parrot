@@ -19,11 +19,14 @@ enum TextInjector {
     /// virtual channel drops/replays input when flooded with zero-gap
     /// CGEvents (see docs/superpowers/specs -- inject debug logging).
     /// Remove or replace with the real per-app-list design once confirmed.
-    static func inject(_ text: String, debug: Bool = false, delayMs: Int = 0) {
+    /// EXPERIMENTAL: `chunkSize` overrides the default 20-char burst size, to
+    /// isolate whether Citrix's corruption is a burst-size limit rather than
+    /// (or in addition to) a rate limit -- e.g. --inject-chunk-size 1 sends
+    /// one UTF-16 unit per CGEvent pair, still spaced by delayMs.
+    static func inject(_ text: String, debug: Bool = false, delayMs: Int = 0, chunkSize: Int = 20) {
         guard !text.isEmpty else { return }
 
         let utf16 = Array(text.utf16)
-        let chunkSize = 20
         var index = 0
         var chunkIndex = 0
         let startTime = Date()
