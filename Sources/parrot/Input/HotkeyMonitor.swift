@@ -10,16 +10,18 @@ final class HotkeyMonitor {
     enum Event { case pressed, released }
     enum HotkeyError: Error { case tapCreateFailed }
 
-    /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
-    private let mask: CGEventFlags
+    /// Physical keycodes that must all be simultaneously down to count as
+    /// "pressed". A single-element list is a plain key; multiple elements
+    /// form a chord. Fn = `[63]` (default).
+    private let requiredKeycodes: [CGKeyCode]
     private let debug: Bool
     private var onEvent: ((Event) -> Void)?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isPressed = false
 
-    init(mask: CGEventFlags = .maskSecondaryFn, debug: Bool = false) {
-        self.mask = mask
+    init(requiredKeycodes: [CGKeyCode] = [63], debug: Bool = false) {
+        self.requiredKeycodes = requiredKeycodes
         self.debug = debug
     }
 
@@ -87,7 +89,9 @@ final class HotkeyMonitor {
                 ))
         }
         guard type == .flagsChanged else { return }
-        let pressed = event.flags.contains(mask)
+        let pressed = requiredKeycodes.allSatisfy {
+            CGEventSource.keyState(.combinedSessionState, key: $0)
+        }
         guard pressed != isPressed else { return }
         isPressed = pressed
         onEvent?(pressed ? .pressed : .released)
