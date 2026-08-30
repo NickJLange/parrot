@@ -3,6 +3,13 @@ import ArgumentParser
 import Foundation
 import WhisperKit
 
+let hotkeyPresets: [String: [CGKeyCode]] = [
+    "fn": [63],
+    "right-option": [61],
+    "left-ctrl-option": [59, 58],
+    "right-cmd": [54],
+]
+
 @main
 struct Parrot: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -34,6 +41,9 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
+    @Option(name: .long, help: "Trigger key: fn, right-option, left-ctrl-option, right-cmd.")
+    var hotkey: String = "fn"
+
     func run() throws {
         if !skipDoctor {
             let checks = DoctorReport.run()
@@ -61,6 +71,14 @@ struct Run: ParsableCommand {
             chosenModel = m
         }
 
+        guard let requiredKeycodes = hotkeyPresets[hotkey] else {
+            FileHandle.standardError.write(Data("unknown hotkey: \(hotkey)\n".utf8))
+            FileHandle.standardError.write(Data(
+                "valid values: \(hotkeyPresets.keys.sorted().joined(separator: ", "))\n".utf8
+            ))
+            throw ExitCode(1)
+        }
+
         let transcriber = WhisperKitTranscriber(model: chosenModel)
         let warmupSemaphore = DispatchSemaphore(value: 0)
         var warmupError: Error?
@@ -81,7 +99,7 @@ struct Run: ParsableCommand {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        let monitor = HotkeyMonitor(debug: debugHotkey)
+        let monitor = HotkeyMonitor(requiredKeycodes: requiredKeycodes, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
@@ -169,7 +187,7 @@ struct Run: ParsableCommand {
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        FileHandle.standardError.write(Data("listening on \(hotkey) hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
     }
 }

@@ -36,7 +36,7 @@ parrot doctor                          # check permissions + fn key setting
 parrot models list                     # list available models
 parrot models download <id>            # pre-download a model
 parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
-parrot --hotkey right-option           # change the push-to-talk key
+parrot --hotkey right-option           # trigger keys: fn, right-option, left-ctrl-option, right-cmd
 parrot --no-overlay                    # disable the bottom-of-screen pill
 ```
 
