@@ -10,7 +10,7 @@ parrot setup                       # grants mic + accessibility, downloads the m
 parrot install --launch-at-login   # optional — runs in the background on login
 ```
 
-**Requires:** macOS 14+ on Apple Silicon (M1 or newer). Transcription runs on the Apple Neural Engine via CoreML — so the installer refuses to run on Intel.
+**Requires:** macOS 14+. Built and tested on Apple Silicon (M1 or newer), where transcription runs on the Apple Neural Engine via CoreML. Intel support is untested — the installer doesn't block it, but WhisperKit's published models are compiled for the Neural Engine and may not load correctly without one.
 
 The installer drops the binary in `/usr/local/bin/parrot`. Builds are unsigned for now, so the installer strips the quarantine xattr — once you've inspected the script you'll see exactly what it does.
 
