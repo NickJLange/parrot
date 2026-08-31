@@ -10,16 +10,17 @@ final class HotkeyMonitor {
     enum Event { case pressed, released }
     enum HotkeyError: Error { case tapCreateFailed }
 
-    /// Mask of the modifier we treat as the hotkey. Fn = `.maskSecondaryFn`.
-    private let mask: CGEventFlags
+    /// Physical keycode that must be down to count as "pressed". Fn = `63`
+    /// (default).
+    private let requiredKeycode: CGKeyCode
     private let debug: Bool
     private var onEvent: ((Event) -> Void)?
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var isPressed = false
 
-    init(mask: CGEventFlags = .maskSecondaryFn, debug: Bool = false) {
-        self.mask = mask
+    init(requiredKeycode: CGKeyCode = 63, debug: Bool = false) {
+        self.requiredKeycode = requiredKeycode
         self.debug = debug
     }
 
@@ -77,17 +78,22 @@ final class HotkeyMonitor {
     }
 
     fileprivate func handle(type: CGEventType, event: CGEvent) {
+        let rawFlags = UInt64(event.flags.rawValue)
         if debug {
-            let flags = event.flags
-            let keycode = event.getIntegerValueField(.keyboardEventKeycode)
-            FileHandle.standardError.write(
-                Data(
-                    "  [debug] type=\(type.rawValue) keycode=\(keycode) flags=\(String(flags.rawValue, radix: 16))\n"
-                        .utf8
-                ))
+            let keycode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+            let name = HotkeyKeys.byKeycode[keycode]?.name ?? "keycode-\(keycode)"
+            let inTrigger = keycode == requiredKeycode
+            let line = "  [debug] type=\(type.rawValue) key=\(name) flags=\(String(rawFlags, radix: 16)) "
+                + "part-of-trigger=\(inTrigger ? "yes" : "no (ignored)")\n"
+            FileHandle.standardError.write(Data(line.utf8))
         }
         guard type == .flagsChanged else { return }
-        let pressed = event.flags.contains(mask)
+        // The bit is a private per-side NX_DEVICE*KEYMASK (see HotkeyKeys) --
+        // it's how we tell left/right apart, since the public CGEventFlags
+        // masks (.maskControl, .maskAlternate, ...) only report "this
+        // category is down somewhere," not which side.
+        let bit = HotkeyKeys.byKeycode[requiredKeycode]?.deviceBit ?? 0
+        let pressed = rawFlags & bit != 0
         guard pressed != isPressed else { return }
         isPressed = pressed
         onEvent?(pressed ? .pressed : .released)
