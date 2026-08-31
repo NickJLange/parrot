@@ -34,9 +34,24 @@ struct Run: ParsableCommand {
     @Option(name: .long, help: "Model id to use. Defaults to the recommended model.")
     var model: String?
 
+    @Option(name: .long, help: "Trigger key: fn, right-option, right-cmd.")
+    var hotkey: String = "fn"
+
     func run() throws {
+        // Validate --hotkey first: it's cheap and has no side effects, so
+        // an invalid value should be reported deterministically rather than
+        // being masked by a doctor-check failure or model-resolution error
+        // that happens to run first.
+        guard let requiredKey = HotkeyKeys.byName[hotkey] else {
+            FileHandle.standardError.write(Data("unknown hotkey: \(hotkey)\n".utf8))
+            FileHandle.standardError.write(Data(
+                "valid values: \(HotkeyKeys.presets.map(\.name).sorted().joined(separator: ", "))\n".utf8
+            ))
+            throw ExitCode(1)
+        }
+
         if !skipDoctor {
-            let checks = DoctorReport.run()
+            let checks = DoctorReport.run(hotkey: hotkey)
             if !DoctorReport.allOK(checks) {
                 FileHandle.standardError.write(Data("startup checks failed:\n".utf8))
                 DoctorReport.print(checks)
@@ -81,14 +96,14 @@ struct Run: ParsableCommand {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
 
-        let monitor = HotkeyMonitor(debug: debugHotkey)
+        let monitor = HotkeyMonitor(requiredKeycode: requiredKey.keycode, debug: debugHotkey)
         let capture = AudioCapture()
         let dumpWav = self.dumpWav
         let overlay: RecordingOverlay? = noOverlay ? nil : MainActor.assumeIsolated { RecordingOverlay() }
         if let overlay {
             capture.onLevel = { level in overlay.pushLevel(level) }
         }
-        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id) }
+        let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id, hotkey: hotkey) }
 
         do {
             try monitor.start { event in
@@ -169,7 +184,7 @@ struct Run: ParsableCommand {
         sigint.resume()
         signal(SIGINT, SIG_IGN)
 
-        FileHandle.standardError.write(Data("listening on fn hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
+        FileHandle.standardError.write(Data("listening on \(hotkey) hold · model: \(chosenModel.id) · ^C to quit\n".utf8))
         app.run()
     }
 }

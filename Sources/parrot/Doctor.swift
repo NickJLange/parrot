@@ -16,12 +16,8 @@ struct Check {
 }
 
 enum DoctorReport {
-    static func run() -> [Check] {
-        [
-            checkMicrophone(),
-            checkAccessibility(),
-            checkFnKeyMapping(),
-        ]
+    static func run(hotkey: String = "fn") -> [Check] {
+        [checkMicrophone(), checkAccessibility(), checkFnKeyMapping(hotkey)].compactMap { $0 }
     }
 
     static func checkMicrophone() -> Check {
@@ -59,8 +55,11 @@ enum DoctorReport {
     }
 
     /// macOS routes Fn (🌐) to one of: Do Nothing / Change Input Source / Show Emoji / Start Dictation.
-    /// We need "Do Nothing" so Fn is a clean modifier.
-    static func checkFnKeyMapping() -> Check {
+    /// We need "Do Nothing" so Fn is a clean modifier. Only applies when
+    /// `hotkey` is `"fn"` -- there's no equivalent OS remapping setting for
+    /// the other `--hotkey` presets to check.
+    static func checkFnKeyMapping(_ hotkey: String) -> Check? {
+        guard hotkey == "fn" else { return nil }
         let raw = readDefault(domain: "com.apple.HIToolbox", key: "AppleFnUsageType")
         guard let raw, let value = Int(raw) else {
             return Check(
