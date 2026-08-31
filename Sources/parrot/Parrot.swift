@@ -3,6 +3,20 @@ import ArgumentParser
 import Foundation
 import WhisperKit
 
+/// A MainActor-isolated counter of "which dictation is the current one."
+/// Lets an overlapping recording's completion Task check it's still the
+/// latest before touching UI state shared with other recordings.
+@MainActor
+final class RecordingGeneration {
+    private(set) var current = 0
+
+    @discardableResult
+    func advance() -> Int {
+        current += 1
+        return current
+    }
+}
+
 @main
 struct Parrot: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -25,7 +39,7 @@ struct Run: ParsableCommand {
     @Flag(name: .long, help: "Print every keyboard event the tap sees (debug).")
     var debugHotkey: Bool = false
 
-    @Flag(name: .long, help: "Log each injected text chunk (index, timing, UTF-16 codepoints) to stderr.")
+    @Flag(name: .long, help: "Log each injected text chunk (index, timing, UTF-16 code units) to stderr.")
     var debugInject: Bool = false
 
     @Flag(name: .long, help: "Write each capture to /tmp/parrot-last.wav for inspection.")
@@ -108,6 +122,15 @@ struct Run: ParsableCommand {
         }
         let menuBar = MainActor.assumeIsolated { MenuBarController(modelID: chosenModel.id, hotkey: hotkey) }
 
+        // Bumped each time a new recording *starts* (not when it finishes),
+        // so an in-flight completion Task from an earlier, still-injecting
+        // dictation can tell a newer recording has since begun -- even
+        // before that newer recording is released -- and skip clearing the
+        // overlay/menu bar out from under it. MainActor-isolated (rather
+        // than a captured `var`) so it's safe to read from Task closures
+        // without a Sendable-closure-capture warning.
+        let recordingGeneration = MainActor.assumeIsolated { RecordingGeneration() }
+
         do {
             try monitor.start { event in
                 switch event {
@@ -116,6 +139,7 @@ struct Run: ParsableCommand {
                         try capture.start()
                         FileHandle.standardError.write(Data("● recording\n".utf8))
                         MainActor.assumeIsolated {
+                            recordingGeneration.advance()
                             overlay?.show(.recording)
                             menuBar.setRecording(true)
                         }
@@ -124,6 +148,7 @@ struct Run: ParsableCommand {
                     }
                 case .released:
                     let samples = capture.stop()
+                    let thisGeneration = MainActor.assumeIsolated { recordingGeneration.current }
                     MainActor.assumeIsolated {
                         overlay?.show(.transcribing)
                         menuBar.setTranscribing()
@@ -144,6 +169,7 @@ struct Run: ParsableCommand {
                     }
                     guard !samples.isEmpty else {
                         MainActor.assumeIsolated {
+                            guard thisGeneration == recordingGeneration.current else { return }
                             overlay?.hide()
                             menuBar.setRecording(false)
                         }
@@ -157,14 +183,16 @@ struct Run: ParsableCommand {
                             FileHandle.standardError.write(Data(
                                 String(format: "→ %.2fs · %@\n", elapsed, text).utf8
                             ))
+                            await TextInjector.inject(text, debug: debugInject)
                             await MainActor.run {
-                                TextInjector.inject(text, debug: debugInject)
+                                guard thisGeneration == recordingGeneration.current else { return }
                                 overlay?.hide()
                                 menuBar.setRecording(false)
                             }
                         } catch {
                             FileHandle.standardError.write(Data("transcription failed: \(error)\n".utf8))
                             await MainActor.run {
+                                guard thisGeneration == recordingGeneration.current else { return }
                                 overlay?.hide()
                                 menuBar.setRecording(false)
                             }
