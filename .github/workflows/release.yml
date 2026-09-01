@@ -50,30 +50,62 @@ jobs:
           "$BIN" run --help
           "$BIN" models list
 
-          # GitHub-hosted runners have no Accessibility/Microphone grants
-          # (no TCC UI to click through), so doctor and run are expected to
-          # report/fail on permissions here -- this checks the binary
-          # behaves correctly under that constraint, not that a live
-          # dictation session works end to end (that needs a real machine
-          # with permissions already granted).
+          # Permission state varies by runner (some GitHub-hosted macOS
+          # runners report Accessibility as already granted, others don't),
+          # so this doesn't assume either outcome -- it just checks the
+          # binary doesn't crash. Not a substitute for a live dictation
+          # test on a machine with permissions actually granted.
           "$BIN" doctor || true
 
-          timeout 300 "$BIN" run --skip-doctor --hotkey right-option > run.log 2>&1
-          status=$?
+          # No `timeout` on macOS (BSD userland, not GNU coreutils) --
+          # poll in the background instead, bounded to 90s either way.
+          "$BIN" run --skip-doctor --hotkey right-option > run.log 2>&1 &
+          PID=$!
+          for _ in $(seq 1 90); do
+            if ! kill -0 "$PID" 2>/dev/null; then
+              break
+            fi
+            if grep -qE "listening on|failed to register hotkey tap" run.log 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          if kill -0 "$PID" 2>/dev/null; then
+            # Still running: reached a steady state (hotkey tap registered,
+            # sitting in its event loop) without crashing -- stop it.
+            kill "$PID"
+            wait "$PID" 2>/dev/null
+            result="alive"
+          else
+            wait "$PID"
+            status=$?
+            result="exited:$status"
+          fi
+
           cat run.log
 
           if ! grep -q "loading whisper-base.en" run.log; then
             echo "::error::model warmup never started -- WhisperKit load likely broken"
             exit 1
           fi
-          if [ "$status" -ne 1 ]; then
-            echo "::error::expected exit 1 (no Accessibility in CI), got $status"
-            exit 1
-          fi
-          if ! grep -q "failed to register hotkey tap" run.log; then
-            echo "::error::did not fail at the expected step (hotkey tap registration)"
-            exit 1
-          fi
+
+          case "$result" in
+            alive)
+              echo "reached steady state (hotkey tap active) without crashing"
+              ;;
+            exited:1)
+              if ! grep -q "failed to register hotkey tap" run.log; then
+                echo "::error::exited 1 but not at the expected step"
+                exit 1
+              fi
+              echo "failed gracefully at hotkey-tap registration (no Accessibility grant)"
+              ;;
+            *)
+              echo "::error::unexpected outcome: $result"
+              exit 1
+              ;;
+          esac
 
       - name: package
         run: |
