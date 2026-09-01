@@ -71,15 +71,24 @@ jobs:
             sleep 1
           done
 
+          # `set -e` is active for this step (GitHub Actions default), and
+          # `wait`'s exit status is the background job's -- often nonzero
+          # here by design (killed, or exited 1 on the graceful-failure
+          # path) -- so it's bracketed with `set +e`/`set -e` to capture
+          # the real status without aborting the script on it.
           if kill -0 "$PID" 2>/dev/null; then
             # Still running: reached a steady state (hotkey tap registered,
             # sitting in its event loop) without crashing -- stop it.
             kill "$PID"
+            set +e
             wait "$PID" 2>/dev/null
+            set -e
             result="alive"
           else
+            set +e
             wait "$PID"
             status=$?
+            set -e
             result="exited:$status"
           fi
 
