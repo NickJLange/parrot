@@ -17,14 +17,48 @@ final class AudioCapture {
     private var samples: [Float] = []
     private var isRecording = false
     private let lock = NSLock()
+    private var configChangeObserver: NSObjectProtocol?
 
     /// Called for every audio buffer with the buffer's RMS level (0…~1).
     /// Invoked on an arbitrary thread; hop to main if you touch UI.
     var onLevel: ((Float) -> Void)?
 
+    init() {
+        // AVAudioEngine caches the input node's format; if the actual input
+        // device changes while idle (system default mic switches, a
+        // Bluetooth/USB mic connects or disconnects) that cache goes stale.
+        // Apple's documented mitigation for this notification is to reset
+        // the engine so it re-derives its graph from current hardware --
+        // this is belt-and-suspenders with the unconditional engine.reset()
+        // in start() below, since this fires promptly on the actual change
+        // rather than waiting for the next recording attempt.
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            self?.engine.reset()
+        }
+    }
+
+    deinit {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+        }
+    }
+
     /// Begin recording. Idempotent — calling while already recording is a no-op.
     func start() throws {
         guard !isRecording else { return }
+
+        // Unconditional, not just after a configuration-change notification:
+        // reset() invalidates any cached IO node state, forcing the format
+        // read below to reflect the actual current hardware rather than a
+        // stale cached value. Installing a tap with a stale format raises
+        // an ObjC NSException ("Input HW format and tap format not
+        // matching") that can't be caught as a Swift Error and crashes the
+        // process -- this must be prevented, not handled after the fact.
+        engine.reset()
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
