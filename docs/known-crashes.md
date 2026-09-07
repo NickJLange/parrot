@@ -1,8 +1,8 @@
 # Known crashes
 
-## Input HW format and tap format not matching (2026-08-01, fixed 2026-09-01)
+## Input HW format and tap format not matching (2026-08-01, candidate fix 2026-09-01)
 
-```
+```text
 *** Terminating app due to uncaught exception 'com.apple.coreaudio.avfaudio', reason: 'Input HW format and tap format not matching'
 ```
 
@@ -40,12 +40,22 @@ being reported as a normal capture failure.
 
 ### Fix
 
-Two layers, per Apple's documented guidance for this exact scenario
-(`Sources/parrot/Audio/AudioCapture.swift`):
+`parrot`'s mitigation, informed by Apple observing
+`.AVAudioEngineConfigurationChange` as the documented signal for this kind of
+hardware change (`Sources/parrot/Audio/AudioCapture.swift`):
 
-1. Observe `.AVAudioEngineConfigurationChange` and call `engine.reset()`
-   immediately when it fires, rather than waiting for the next recording
-   attempt to discover the format is stale.
+1. Observe `.AVAudioEngineConfigurationChange`. That notification is posted
+   *synchronously* on an internal AVAudioEngine queue, not ours — touching
+   the engine directly from inside the callback (e.g. calling `reset()`) can
+   deadlock. So the callback only hops to main, the same queue `start()`/
+   `stop()` always already run on, and does the actual recovery there,
+   serialized with any in-flight `start()`/`stop()` call:
+   - If idle, there's nothing to reconcile (see point 2).
+   - If a recording is in progress, stop and discard it cleanly (matching
+     `stop()`'s own teardown) and update `isRecording` — there's no way to
+     salvage audio across a format change, and leaving `isRecording` true
+     while the tap is actually gone would show "recording" in the UI while
+     nothing is being captured.
 2. Unconditionally call `engine.reset()` at the top of every `start()` call,
    before re-reading `input.outputFormat(forBus: 0)` — belt-and-suspenders
    in case the notification is missed or races with a recording attempt.
@@ -56,15 +66,16 @@ Two layers, per Apple's documented guidance for this exact scenario
 
 Not reproduced end-to-end in this fix (no way to hot-swap a mic input device
 or synthesize a real hold-to-record keypress in the environment this was
-written in). The change directly implements Apple's documented mitigation
-for `.AVAudioEngineConfigurationChange` + stale-format tap installs, and the
-daemon still starts and records normally with `engine.reset()` added to the
-hot path. Needs a live test: switch input devices while `parrot` is idle,
-then record, and confirm no crash.
+written in). The daemon still starts and records normally with the change,
+and the deadlock/race issues an earlier draft of this fix had were caught
+and corrected in review. Needs a live test: switch input devices while
+`parrot` is idle, then record, and confirm no crash; ideally also switch
+devices *during* an active recording and confirm it stops cleanly instead
+of leaving stuck "recording" UI state.
 
 ### Full stack trace
 
-```
+```text
 *** First throw call stack:
 (
     0   CoreFoundation                      0x000000019c1d78a0 __exceptionPreprocess + 176

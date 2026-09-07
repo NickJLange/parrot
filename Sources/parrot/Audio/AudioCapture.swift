@@ -28,16 +28,25 @@ final class AudioCapture {
         // device changes while idle (system default mic switches, a
         // Bluetooth/USB mic connects or disconnects) that cache goes stale.
         // Apple's documented mitigation for this notification is to reset
-        // the engine so it re-derives its graph from current hardware --
-        // this is belt-and-suspenders with the unconditional engine.reset()
-        // in start() below, since this fires promptly on the actual change
-        // rather than waiting for the next recording attempt.
+        // the engine so it re-derives its graph from current hardware.
+        //
+        // `queue: nil` delivers this block *synchronously* on whatever
+        // thread AVAudioEngine posts the notification from -- an internal
+        // engine queue, not ours. Touching the engine directly here (e.g.
+        // calling reset()) can deadlock, since that internal queue may
+        // itself be waiting on engine state. So this only hops to main --
+        // the same queue start()/stop() already always run on (see
+        // HotkeyMonitor's DispatchQueue.main.async callback) -- and does
+        // the actual recovery there, serialized with any in-flight
+        // start()/stop() call.
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: nil
         ) { [weak self] _ in
-            self?.engine.reset()
+            DispatchQueue.main.async {
+                self?.handleConfigurationChange()
+            }
         }
     }
 
@@ -45,6 +54,30 @@ final class AudioCapture {
         if let configChangeObserver {
             NotificationCenter.default.removeObserver(configChangeObserver)
         }
+    }
+
+    /// Runs on main, serialized with start()/stop() by construction (see
+    /// the observer comment in init()).
+    private func handleConfigurationChange() {
+        guard isRecording else {
+            // Idle: nothing to reconcile. start() unconditionally resets
+            // the engine before every session (see below), so there's
+            // nothing stale left to clean up here.
+            return
+        }
+        // The device changed mid-recording -- the running tap/engine are
+        // no longer valid for whatever format the hardware switched to,
+        // and there's no way to salvage this utterance's audio across a
+        // format change. Stop and discard cleanly (matching stop()'s own
+        // teardown) rather than leave isRecording true while capture has
+        // actually stopped underneath it, or risk feeding the converter
+        // mismatched-format buffers.
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        isRecording = false
+        lock.lock()
+        samples.removeAll(keepingCapacity: true)
+        lock.unlock()
     }
 
     /// Begin recording. Idempotent — calling while already recording is a no-op.
