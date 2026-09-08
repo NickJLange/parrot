@@ -66,7 +66,7 @@ hardware change (`Sources/parrot/Audio/AudioCapture.swift`):
 
 Not reproduced end-to-end in this fix (no way to hot-swap a mic input device
 or synthesize a real hold-to-record keypress in the environment this was
-written in). The daemon still starts and records normally with the change,
+written in). The daemon still starts normally with the change,
 and the deadlock/race issues an earlier draft of this fix had were caught
 and corrected in review. Needs a live test: switch input devices while
 `parrot` is idle, then record, and confirm no crash; ideally also switch
