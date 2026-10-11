@@ -12,7 +12,7 @@ final class AudioCapture {
 
     static let targetSampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var samples: [Float] = []
     private var isRecording = false
@@ -24,21 +24,30 @@ final class AudioCapture {
     var onLevel: ((Float) -> Void)?
 
     init() {
-        // AVAudioEngine caches the input node's format; if the actual input
-        // device changes while idle (system default mic switches, a
-        // Bluetooth/USB mic connects or disconnects) that cache goes stale.
-        // Apple's documented mitigation for this notification is to reset
-        // the engine so it re-derives its graph from current hardware.
-        //
-        // `queue: nil` delivers this block *synchronously* on whatever
-        // thread AVAudioEngine posts the notification from -- an internal
-        // engine queue, not ours. Touching the engine directly here (e.g.
-        // calling reset()) can deadlock, since that internal queue may
-        // itself be waiting on engine state. So this only hops to main --
-        // the same queue start()/stop() already always run on (see
-        // HotkeyMonitor's DispatchQueue.main.async callback) -- and does
-        // the actual recovery there, serialized with any in-flight
-        // start()/stop() call.
+        observeConfigurationChanges()
+    }
+
+    deinit {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+        }
+    }
+
+    /// The observer is tied to the current `engine` instance, so this is
+    /// re-run whenever start() replaces the engine.
+    ///
+    /// `queue: nil` delivers this block *synchronously* on whatever thread
+    /// AVAudioEngine posts the notification from -- an internal engine
+    /// queue, not ours. Touching the engine directly there can deadlock,
+    /// since that internal queue may itself be waiting on engine state. So
+    /// this only hops to main -- the same queue start()/stop() already
+    /// always run on (see HotkeyMonitor's DispatchQueue.main.async
+    /// callback) -- and does the actual recovery there, serialized with
+    /// any in-flight start()/stop() call.
+    private func observeConfigurationChanges() {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+        }
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
@@ -50,19 +59,13 @@ final class AudioCapture {
         }
     }
 
-    deinit {
-        if let configChangeObserver {
-            NotificationCenter.default.removeObserver(configChangeObserver)
-        }
-    }
-
     /// Runs on main, serialized with start()/stop() by construction (see
     /// the observer comment in init()).
     private func handleConfigurationChange() {
         guard isRecording else {
-            // Idle: nothing to reconcile. start() unconditionally resets
-            // the engine before every session (see below), so there's
-            // nothing stale left to clean up here.
+            // Idle: nothing to reconcile. start() checks for a stale
+            // input format before every session (see below) -- this
+            // notification isn't reliably delivered anyway.
             return
         }
         // The device changed mid-recording -- the running tap/engine are
@@ -84,14 +87,26 @@ final class AudioCapture {
     func start() throws {
         guard !isRecording else { return }
 
-        // Unconditional, not just after a configuration-change notification:
-        // reset() invalidates any cached IO node state, forcing the format
-        // read below to reflect the actual current hardware rather than a
-        // stale cached value. Installing a tap with a stale format raises
-        // an ObjC NSException ("Input HW format and tap format not
+        // When the input device changes while idle (system default mic
+        // switches, a Bluetooth/USB/Continuity mic connects or
+        // disconnects), the input node keeps reporting the old device's
+        // format from outputFormat(forBus:) -- engine.reset() does not
+        // refresh it, and the configuration-change notification isn't
+        // reliably delivered. Installing a tap with that stale format
+        // raises an ObjC NSException ("Input HW format and tap format not
         // matching") that can't be caught as a Swift Error and crashes the
-        // process -- this must be prevented, not handled after the fact.
-        engine.reset()
+        // process. inputFormat(forBus:) does reflect the current hardware,
+        // so compare the two and replace the engine on a mismatch; a fresh
+        // engine derives its formats from the current device. Not done
+        // unconditionally because building an engine costs ~30ms+, which
+        // would clip the start of every utterance.
+        let hardware = engine.inputNode.inputFormat(forBus: 0)
+        let cached = engine.inputNode.outputFormat(forBus: 0)
+        if hardware.sampleRate != cached.sampleRate
+            || hardware.channelCount != cached.channelCount {
+            engine = AVAudioEngine()
+            observeConfigurationChanges()
+        }
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
