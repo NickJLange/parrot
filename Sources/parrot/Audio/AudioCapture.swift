@@ -8,23 +8,116 @@ final class AudioCapture {
     enum CaptureError: Error {
         case engineStartFailed(Error)
         case converterCreationFailed
+        /// No usable input device, or the input format is still
+        /// inconsistent after rebuilding the engine.
+        case inputFormatUnavailable
     }
 
     static let targetSampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var samples: [Float] = []
     private var isRecording = false
     private let lock = NSLock()
+    private var configChangeObserver: NSObjectProtocol?
 
     /// Called for every audio buffer with the buffer's RMS level (0…~1).
     /// Invoked on an arbitrary thread; hop to main if you touch UI.
     var onLevel: ((Float) -> Void)?
 
+    init() {
+        observeConfigurationChanges()
+    }
+
+    deinit {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+        }
+    }
+
+    /// The observer is tied to the current `engine` instance, so this is
+    /// re-run whenever start() replaces the engine.
+    ///
+    /// `queue: nil` delivers this block *synchronously* on whatever thread
+    /// AVAudioEngine posts the notification from -- an internal engine
+    /// queue, not ours. Touching the engine directly there can deadlock,
+    /// since that internal queue may itself be waiting on engine state. So
+    /// this only hops to main -- the same queue start()/stop() already
+    /// always run on (see HotkeyMonitor's DispatchQueue.main.async
+    /// callback) -- and does the actual recovery there, serialized with
+    /// any in-flight start()/stop() call.
+    private func observeConfigurationChanges() {
+        if let configChangeObserver {
+            NotificationCenter.default.removeObserver(configChangeObserver)
+        }
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self, weak engine] _ in
+            DispatchQueue.main.async {
+                // A notification from an engine start() has since replaced
+                // may already be queued here; ignore it, or it would stop
+                // and discard the new engine's recording.
+                guard let self, let engine, engine === self.engine else { return }
+                self.handleConfigurationChange()
+            }
+        }
+    }
+
+    /// Runs on main, serialized with start()/stop() by construction (see
+    /// observeConfigurationChanges()).
+    private func handleConfigurationChange() {
+        guard isRecording else {
+            // Idle: nothing to reconcile. start() checks for a stale
+            // input format before every session (see below) -- this
+            // notification isn't reliably delivered anyway.
+            return
+        }
+        // The device changed mid-recording -- the running tap/engine are
+        // no longer valid for whatever format the hardware switched to,
+        // and there's no way to salvage this utterance's audio across a
+        // format change. Stop and discard cleanly (matching stop()'s own
+        // teardown) rather than leave isRecording true while capture has
+        // actually stopped underneath it, or risk feeding the converter
+        // mismatched-format buffers.
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        isRecording = false
+        lock.lock()
+        samples.removeAll(keepingCapacity: true)
+        lock.unlock()
+        FileHandle.standardError.write(Data("input device changed mid-recording; recording discarded\n".utf8))
+    }
+
     /// Begin recording. Idempotent — calling while already recording is a no-op.
     func start() throws {
         guard !isRecording else { return }
+
+        // When the input device changes while idle (system default mic
+        // switches, a Bluetooth/USB/Continuity mic connects or
+        // disconnects), the input node keeps reporting the old device's
+        // format from outputFormat(forBus:) -- engine.reset() does not
+        // refresh it, and the configuration-change notification isn't
+        // reliably delivered. Installing a tap with that stale format
+        // raises an ObjC NSException ("Input HW format and tap format not
+        // matching") that can't be caught as a Swift Error and crashes the
+        // process. inputFormat(forBus:) does reflect the current hardware,
+        // so compare the two and replace the engine on a mismatch; a fresh
+        // engine derives its formats from the current device. Not done
+        // unconditionally because building an engine costs ~30ms+, which
+        // would clip the start of every utterance.
+        if !inputFormatIsConsistent() {
+            engine = AVAudioEngine()
+            observeConfigurationChanges()
+            // Still inconsistent (no input device, or the device is mid-
+            // transition): fail as a normal Swift error rather than reach
+            // installTap and crash.
+            guard inputFormatIsConsistent() else {
+                throw CaptureError.inputFormatUnavailable
+            }
+        }
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
@@ -59,6 +152,17 @@ final class AudioCapture {
         }
 
         isRecording = true
+    }
+
+    /// True when the input node's cached format matches the current
+    /// hardware on the fields installTap validates, and describes a usable
+    /// device (a missing input reports 0 Hz / 0 channels).
+    private func inputFormatIsConsistent() -> Bool {
+        let hardware = engine.inputNode.inputFormat(forBus: 0)
+        let cached = engine.inputNode.outputFormat(forBus: 0)
+        return cached.sampleRate > 0 && cached.channelCount > 0
+            && hardware.sampleRate == cached.sampleRate
+            && hardware.channelCount == cached.channelCount
     }
 
     /// Stop recording and return all captured samples (16 kHz mono Float32).
