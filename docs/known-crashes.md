@@ -1,6 +1,6 @@
 # Known crashes
 
-## Input HW format and tap format not matching (2026-08-01, candidate fix 2026-09-01)
+## Input HW format and tap format not matching (2026-08-01, fixed 2026-10-11)
 
 ```text
 *** Terminating app due to uncaught exception 'com.apple.coreaudio.avfaudio', reason: 'Input HW format and tap format not matching'
@@ -56,22 +56,30 @@ hardware change (`Sources/parrot/Audio/AudioCapture.swift`):
      salvage audio across a format change, and leaving `isRecording` true
      while the tap is actually gone would show "recording" in the UI while
      nothing is being captured.
-2. Unconditionally call `engine.reset()` at the top of every `start()` call,
-   before re-reading `input.outputFormat(forBus: 0)` — belt-and-suspenders
-   in case the notification is missed or races with a recording attempt.
-   `reset()` invalidates any cached IO node state, so the format read
-   afterward reflects the actual current hardware.
+2. At the top of every `start()`, compare `input.inputFormat(forBus: 0)`
+   (the current hardware format) against `input.outputFormat(forBus: 0)`
+   (the cached one). On a sample-rate or channel-count mismatch, replace the
+   engine with a fresh `AVAudioEngine` -- which derives its formats from the
+   current device -- and re-attach the observer to it. This is the actual
+   fix; the notification in point 1 is not reliably delivered (it fired in
+   only about half of the repro runs).
+
+   An earlier version of this fix called `engine.reset()` here instead. That
+   does **not** work: `reset()` leaves the input node's cached output format
+   untouched, and the crash recurred (2026-10-11). The engine isn't rebuilt
+   unconditionally because constructing one costs ~30ms+ (~130ms cold),
+   which would clip the start of every utterance.
 
 ### Verification status
 
-Not reproduced end-to-end in this fix (no way to hot-swap a mic input device
-or synthesize a real hold-to-record keypress in the environment this was
-written in). The daemon still starts normally with the change,
-and the deadlock/race issues an earlier draft of this fix had were caught
-and corrected in review. Needs a live test: switch input devices while
-`parrot` is idle, then record, and confirm no crash; ideally also switch
-devices *during* an active recording and confirm it stops cleanly instead
-of leaving stuck "recording" UI state.
+Reproduced 2026-10-11 by switching the system default input from the
+built-in mic (48 kHz) to a Jabra Engage 65 USB headset (16 kHz) between two
+recordings, using a small driver compiled together with `AudioCapture.swift`
+that records, switches the default input via CoreAudio, and records again.
+The `reset()` version crashed 2/2 runs; the engine-replacement version
+completed 3/3 runs (record on built-in, record on Jabra, record on built-in
+again, ~1s of audio captured each time). Switching devices *during* an
+active recording (point 1's discard path) has not been exercised.
 
 ### Full stack trace
 
