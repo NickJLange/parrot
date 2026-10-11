@@ -8,6 +8,9 @@ final class AudioCapture {
     enum CaptureError: Error {
         case engineStartFailed(Error)
         case converterCreationFailed
+        /// No usable input device, or the input format is still
+        /// inconsistent after rebuilding the engine.
+        case inputFormatUnavailable
     }
 
     static let targetSampleRate: Double = 16_000
@@ -52,15 +55,19 @@ final class AudioCapture {
             forName: .AVAudioEngineConfigurationChange,
             object: engine,
             queue: nil
-        ) { [weak self] _ in
+        ) { [weak self, weak engine] _ in
             DispatchQueue.main.async {
-                self?.handleConfigurationChange()
+                // A notification from an engine start() has since replaced
+                // may already be queued here; ignore it, or it would stop
+                // and discard the new engine's recording.
+                guard let self, let engine, engine === self.engine else { return }
+                self.handleConfigurationChange()
             }
         }
     }
 
     /// Runs on main, serialized with start()/stop() by construction (see
-    /// the observer comment in init()).
+    /// observeConfigurationChanges()).
     private func handleConfigurationChange() {
         guard isRecording else {
             // Idle: nothing to reconcile. start() checks for a stale
@@ -81,6 +88,7 @@ final class AudioCapture {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         lock.unlock()
+        FileHandle.standardError.write(Data("input device changed mid-recording; recording discarded\n".utf8))
     }
 
     /// Begin recording. Idempotent — calling while already recording is a no-op.
@@ -100,12 +108,15 @@ final class AudioCapture {
         // engine derives its formats from the current device. Not done
         // unconditionally because building an engine costs ~30ms+, which
         // would clip the start of every utterance.
-        let hardware = engine.inputNode.inputFormat(forBus: 0)
-        let cached = engine.inputNode.outputFormat(forBus: 0)
-        if hardware.sampleRate != cached.sampleRate
-            || hardware.channelCount != cached.channelCount {
+        if !inputFormatIsConsistent() {
             engine = AVAudioEngine()
             observeConfigurationChanges()
+            // Still inconsistent (no input device, or the device is mid-
+            // transition): fail as a normal Swift error rather than reach
+            // installTap and crash.
+            guard inputFormatIsConsistent() else {
+                throw CaptureError.inputFormatUnavailable
+            }
         }
 
         let input = engine.inputNode
@@ -141,6 +152,17 @@ final class AudioCapture {
         }
 
         isRecording = true
+    }
+
+    /// True when the input node's cached format matches the current
+    /// hardware on the fields installTap validates, and describes a usable
+    /// device (a missing input reports 0 Hz / 0 channels).
+    private func inputFormatIsConsistent() -> Bool {
+        let hardware = engine.inputNode.inputFormat(forBus: 0)
+        let cached = engine.inputNode.outputFormat(forBus: 0)
+        return cached.sampleRate > 0 && cached.channelCount > 0
+            && hardware.sampleRate == cached.sampleRate
+            && hardware.channelCount == cached.channelCount
     }
 
     /// Stop recording and return all captured samples (16 kHz mono Float32).

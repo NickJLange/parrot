@@ -1,6 +1,6 @@
 # Known crashes
 
-## Input HW format and tap format not matching (2026-08-01, fixed 2026-10-11)
+## Input HW format and tap format not matching (2026-08-01, fixed for default-device switches 2026-10-11)
 
 ```text
 *** Terminating app due to uncaught exception 'com.apple.coreaudio.avfaudio', reason: 'Input HW format and tap format not matching'
@@ -22,9 +22,10 @@ let inputFormat = input.outputFormat(forBus: 0)
 input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { ... }
 ```
 
-`AudioCapture` wraps a single long-lived `AVAudioEngine` that is reused for
-every recording session over the life of the process — `engine.stop()` /
-`removeTap` on release, then `installTap` again on the next press.
+`AudioCapture` wraps an `AVAudioEngine` that is reused across recording
+sessions — `engine.stop()` / `removeTap` on release, then `installTap` again
+on the next press — and replaced only when its cached input format goes
+stale (see Fix).
 
 ### Root cause
 
@@ -62,7 +63,12 @@ hardware change (`Sources/parrot/Audio/AudioCapture.swift`):
    engine with a fresh `AVAudioEngine` -- which derives its formats from the
    current device -- and re-attach the observer to it. This is the actual
    fix; the notification in point 1 is not reliably delivered (it fired in
-   only about half of the repro runs).
+   only about half of the repro runs). If the formats are still
+   inconsistent after the rebuild, or report 0 Hz / 0 channels (no input
+   device), `start()` throws `CaptureError.inputFormatUnavailable` --
+   logged as "capture failed" -- instead of reaching `installTap`.
+   Notifications already queued from a replaced engine are ignored, so
+   they can't discard a recording on the new engine.
 
    An earlier version of this fix called `engine.reset()` here instead. That
    does **not** work: `reset()` leaves the input node's cached output format
@@ -80,6 +86,21 @@ The `reset()` version crashed 2/2 runs; the engine-replacement version
 completed 3/3 runs (record on built-in, record on Jabra, record on built-in
 again, ~1s of audio captured each time). Switching devices *during* an
 active recording (point 1's discard path) has not been exercised.
+
+A follow-up driver run checked CoreAudio's "device is running" flag during
+each session and confirmed capture actually moves to the new device
+(built-in -> Jabra -> built-in), not just the system default setting. A
+manual test with the full app -- Jabra as default input, record, unplug the
+Jabra, record again -- did not crash.
+
+Open observation: once in roughly 20 driver runs, `start()` hung (>4 min,
+spinning) inside AVFAudio's `-[AVAudioEngine inputNode]` ->
+`AVAudioIOUnit_OSX::_GetHWFormat`, two seconds after a previous process had
+switched the default input, while the engine's queue was handling an IO unit
+configuration change. The old code makes the same `inputNode` call, and the
+hang did not recur in 12 further runs of old and new code, so it's not
+attributed to this fix; noted in case it shows up in the field as a freeze
+on hotkey press right after a device switch.
 
 ### Full stack trace
 
