@@ -22,7 +22,7 @@ struct Parrot: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "parrot",
         abstract: "Minimal macOS dictation daemon. Hold Fn, speak, release.",
-        subcommands: [Run.self, Setup.self, Doctor.self, Models.self, Install.self],
+        subcommands: [Run.self, Transcribe.self, Setup.self, Doctor.self, Models.self, Install.self],
         defaultSubcommand: Run.self
     )
 }
