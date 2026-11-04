@@ -38,7 +38,42 @@ parrot models download <id>            # pre-download a model
 parrot --model whisper-large-v3-turbo  # bigger, multilingual, slower first-run
 parrot --hotkey right-option           # trigger keys: fn, right-option, right-cmd
 parrot --no-overlay                    # disable the bottom-of-screen pill
+parrot transcribe < recording.wav      # stdin audio -> transcript on stdout
+parrot transcribe recording.wav        # read a file directly
 ```
+
+## Transcribe files and pipes
+
+`parrot transcribe` runs without the mic, hotkey, menu bar, or text injection.
+It uses the same on-device models as dictation, downloading the selected model
+on first use. Microphone and Accessibility permissions are not required.
+
+```sh
+parrot transcribe < recording.wav > transcript.txt
+parrot transcribe recording.wav --model whisper-large-v3-turbo > transcript.txt
+cat recording.wav | parrot transcribe -
+
+# Convert any ffmpeg-supported source, or stream audio from another program:
+ffmpeg -i recording.mp3 -f s16le -ar 16000 -ac 1 - | parrot transcribe --input-format s16le
+```
+
+The default `--input-format audio` decodes WAV and other audio files supported
+by macOS, averages channels to mono, and resamples to 16 kHz. Container audio
+from stdin is copied to a temporary file and decoded after EOF; allow enough
+temporary disk space for the input. The temporary file is removed on completion
+or a handled error. Supplying a file path avoids this copy.
+
+For streaming input, use `--input-format s16le`: headerless, signed 16-bit
+little-endian PCM, **16 kHz, mono**. It reads directly from the pipe and emits
+text after each chunk, including a final partial chunk at EOF. Other raw sample
+rates, channel counts, and encodings must be converted first.
+
+Both modes process 30 seconds at a time to bound memory. Use
+`--chunk-seconds 10` to change this (1–300 seconds). Each nonempty transcript
+chunk is written as one line to stdout; status and errors go to stderr. Chunks
+are transcribed independently, so words crossing a boundary may lose context.
+Empty raw input produces no output. Invalid input or inference failures exit
+nonzero; earlier transcript lines may already have been written.
 
 ## Stack
 
